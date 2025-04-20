@@ -4,7 +4,7 @@ from datetime import datetime
 
 # Configuration
 API_BASE_URL = "http://localhost:5050"
-USER_ID = "dda76fd9-c9c0-4d6a-af56-b5d160688e99"  # The user ID to test
+USER_ID = "e14dcd98-72cc-4322-9e3e-a91793e0f221"  # The user ID to test
 TOP_N = 5  # Number of recommendations to request
 
 def test_recommendations():

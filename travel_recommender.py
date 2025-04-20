@@ -1,41 +1,51 @@
+import os
 import pandas as pd
 import numpy as np
-import joblib
-import os
 import tracemalloc
 import time
+from datetime import datetime, timedelta
+import json
+from data_processor import DataProcessor
+from vectorizer import FeatureVectorizer
+from recommender import RecommendationEngine
+from evaluator import ModelEvaluator
+from memory_profiler import MemoryProfiler
 
 class TravelRecommender:
     """
-    Main class for the Travel Recommendation System.
-    Integrates all components and provides a high-level interface.
+    Main class for travel recommendation system.
+    
+    Integrates data processing, feature vectorization, 
+    recommendation engine, and model evaluation components.
     """
     def __init__(self, data_dir="data", model_dir="models"):
-        """Initialize the travel recommendation system"""
-        from data_processor import DataProcessor
-        from vectorizer import FeatureVectorizer
-        from recommender import RecommendationEngine
-        from evaluator import ModelEvaluator
-        from memory_profiler import MemoryProfiler
-        
+        """Initialize travel recommender with directories for data and models"""
         self.data_dir = data_dir
         self.model_dir = model_dir
+        self.data_processor = DataProcessor(data_dir)
+        self.vectorizer = FeatureVectorizer()
+        self.recommender = RecommendationEngine()
+        self.evaluator = ModelEvaluator()
+        self.memory_profiler = MemoryProfiler()
+        self.is_trained = False
         
         # Create directories if they don't exist
         os.makedirs(data_dir, exist_ok=True)
         os.makedirs(model_dir, exist_ok=True)
         
-        # Initialize components
-        self.data_processor = DataProcessor(data_dir=data_dir)  # Pass data_dir here
-        self.vectorizer = FeatureVectorizer()
-        self.recommender = RecommendationEngine(batch_size=50)
-        self.evaluator = ModelEvaluator()
-        self.memory_profiler = MemoryProfiler()
-        
-        self.is_trained = False
-        
+        # Load or create metadata
+        self.metadata_path = os.path.join(model_dir, "metadata.json")
+        self.load_metadata()
+    
     def train(self, users_path=None, places_path=None, retrain=False):
-        """Train the recommendation system"""
+        """
+        Train the recommendation model
+        
+        Parameters:
+        - users_path: Path to users data file
+        - places_path: Path to places data file
+        - retrain: Whether to force retraining
+        """
         with self.memory_profiler.profile_block("Training"):
             if users_path is None:
                 users_path = os.path.join(self.data_dir, "Users.xlsx")
@@ -71,33 +81,66 @@ class TravelRecommender:
             # Evaluate model
             self.evaluator.evaluate(self.recommender, self.vectorizer, test_df)
             
+            # Initialize user metadata with current time
+            self.initialize_user_metadata()
+            
             # Save model
             self.save_model()
             
             self.is_trained = True
             return True
     
-    def recommend(self, user_data, top_n=5):
+    def initialize_user_metadata(self):
+        """Initialize metadata for all users with current timestamp"""
+        if hasattr(self.recommender, 'train_df') and self.recommender.train_df is not None:
+            if 'User ID' in self.recommender.train_df.columns:
+                now = datetime.utcnow().isoformat()
+                for user_id in self.recommender.train_df['User ID']:
+                    self.recommender.user_metadata[str(user_id)] = now
+                
+                # Update global timestamp
+                self.recommender.update_global_timestamp()
+    
+    def recommend(self, user_data, top_n=5, additional_exclusions=None):
         """
         Get recommendations for a user
         
         Parameters:
         - user_data: Either a user ID or a dictionary with user preferences
         - top_n: Number of recommendations to return
+        - additional_exclusions: Additional places to exclude from recommendations
         """
         if not self.is_trained:
             print("Model not trained. Please train the model first.")
             return None
         
         # If user_data is an ID, look up the user
-        if isinstance(user_data, (int, np.integer)):
-            user_idx = user_data
-            if user_idx >= len(self.recommender.train_df):
-                print(f"User ID {user_idx} not found.")
+        if isinstance(user_data, (int, np.integer)) or (isinstance(user_data, str) and user_data.isdigit()):
+            user_id = str(user_data)
+            user_idx = None
+            
+            # Find user index by ID
+            if hasattr(self.recommender, 'user_index_mapping'):
+                if user_id in self.recommender.user_index_mapping:
+                    user_idx = self.recommender.user_index_mapping[user_id]
+                elif int(user_id) in self.recommender.user_index_mapping:
+                    user_idx = self.recommender.user_index_mapping[int(user_id)]
+            
+            if user_idx is None:
+                for i, idx in enumerate(self.recommender.train_df['User ID']):
+                    if str(idx) == user_id:
+                        user_idx = i
+                        break
+            
+            if user_idx is None or user_idx >= len(self.recommender.train_df):
+                print(f"User ID {user_id} not found.")
                 return None
             
             recommendations, similar_users, similarity_scores = self.recommender.recommend_places(
-                user_idx=user_idx, top_n=top_n
+                user_idx=user_idx, 
+                user_id=user_id,
+                top_n=top_n,
+                additional_exclusions=additional_exclusions
             )
         else:
             # For a new user with preferences
@@ -119,7 +162,9 @@ class TravelRecommender:
             
             # Get recommendations
             recommendations, similar_users, similarity_scores = self.recommender.recommend_places(
-                user_vector=user_vector, top_n=top_n
+                user_vector=user_vector, 
+                top_n=top_n,
+                additional_exclusions=additional_exclusions
             )
         
         return {
@@ -160,38 +205,24 @@ class TravelRecommender:
                         print(f"Error: User {user_id} not found in updated data")
                         return False
                     
-                    # Get the user's index in the training data
-                    user_indices = self.recommender.train_df[self.recommender.train_df['User ID'] == user_id].index
-                    if len(user_indices) == 0:
-                        print(f"Error: User {user_id} not found in training data")
-                        return False
-                        
-                    user_idx = user_indices[0]
+                    # Convert user row to dict
+                    user_data_dict = user_row.iloc[0].to_dict()
                     
-                    # Create updated feature vector
-                    user_vector = self.vectorizer.transform_new_user(user_row['combined_features'].values[0])
+                    # Update user in the recommendation model
+                    self.recommender.update_user(
+                        user_id=user_id, 
+                        new_user_data=user_data_dict, 
+                        vectorizer=self.vectorizer
+                    )
                     
-                    # Update the matrix at this user's position
-                    self.recommender.weighted_matrix[user_idx] = user_vector
-                    
-                    # Recompute similarities for this user
-                    if self.recommender.similarity_matrix is not None:
-                        from sklearn.metrics.pairwise import cosine_similarity
-                        import scipy.sparse as sp
-                        new_similarities = cosine_similarity(user_vector, self.recommender.weighted_matrix)[0]
-                        self.recommender.similarity_matrix[user_idx] = sp.csr_matrix(new_similarities)
-                        # Update column (similarities of other users to this user)
-                        # We need to convert to lil_matrix for efficient column updates
-                        sim_matrix_lil = self.recommender.similarity_matrix.tolil()
-                        sim_matrix_lil[:, user_idx] = sp.lil_matrix(new_similarities).T
-                        self.recommender.similarity_matrix = sim_matrix_lil.tocsr()
+                    # Update metadata timestamp for this user
+                    self.recommender.user_metadata[str(user_id)] = datetime.utcnow().isoformat()
                     
                     # Save updated model
                     self.save_model()
                     
                 return success
             
-                
             elif user_data is not None:
                 # Adding new user
                 if 'User ID' not in user_data:
@@ -222,6 +253,10 @@ class TravelRecommender:
                 if self.is_trained:
                     # Update model with new user
                     new_user_idx = self.recommender.update_with_new_user(self.vectorizer, user_data)
+                    
+                    # Update metadata timestamp for this user
+                    self.recommender.user_metadata[str(user_data['User ID'])] = datetime.utcnow().isoformat()
+                    
                     print(f"Added new user with ID {user_data['User ID']}, index {new_user_idx}")
                     
                     # Save model
@@ -232,6 +267,43 @@ class TravelRecommender:
             else:
                 print("Either user_id and place_name, or user_data must be provided.")
                 return False
+    
+    def batch_update_users(self, user_list):
+        """
+        Update multiple users in batch
+        
+        Parameters:
+        - user_list: List of dicts with user_id and user_data to update
+        
+        Returns:
+        - Number of users successfully updated
+        """
+        if not self.is_trained:
+            print("Model not trained. Please train the model first.")
+            return 0
+        
+        updated_count = 0
+        for user_item in user_list:
+            user_id = user_item.get('user_id')
+            user_data = user_item.get('user_data')
+            
+            if user_id and user_data:
+                # Convert user ID to string for consistency
+                user_id = str(user_id)
+                
+                # Update user in recommender
+                if self.recommender.update_user(user_id, user_data, self.vectorizer):
+                    updated_count += 1
+                    
+                    # Update timestamp in metadata
+                    self.recommender.user_metadata[user_id] = datetime.utcnow().isoformat()
+        
+        # Save model if any users were updated
+        if updated_count > 0:
+            self.recommender.update_global_timestamp()
+            self.save_model()
+        
+        return updated_count
 
     def save_model(self):
         """Save model artifacts"""
@@ -244,11 +316,10 @@ class TravelRecommender:
         # Save vectorizer
         self.vectorizer.save(self.model_dir)
         
-        # Save recommender
+        # Save recommender (includes metadata)
         self.recommender.save(self.model_dir)
         
         print(f"Model saved to {self.model_dir}")
-        
         
     def load_model(self):
         """Load model artifacts"""
@@ -256,7 +327,7 @@ class TravelRecommender:
             # Load vectorizer
             self.vectorizer.load(self.model_dir)
             
-            # Load recommender
+            # Load recommender (includes metadata)
             self.recommender.load(self.model_dir)
             
             # Load processed data
@@ -270,21 +341,82 @@ class TravelRecommender:
             print(f"Error loading model: {e}")
             return False
     
+    def load_metadata(self):
+        """Load metadata from file or create new if not exists"""
+        try:
+            with open(self.metadata_path, "r") as f:
+                self.metadata = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            # Create default metadata
+            self.metadata = {
+                "last_global_update": datetime.utcnow().isoformat(),
+                "users": {},
+                "model_version": "1.0",
+                "total_updates": 0
+            }
+            # Save default metadata
+            self.save_metadata()
+    
+    def save_metadata(self):
+        """Save metadata to file"""
+        with open(self.metadata_path, "w") as f:
+            json.dump(self.metadata, f, indent=2)
+    
+    def get_recent_active_users(self, since=None):
+        """
+        Get users active since a specific time
+        
+        Parameters:
+        - since: ISO format datetime string or datetime object
+        
+        Returns:
+        - List of user IDs
+        """
+        if since is None:
+            # Default to 24 hours ago
+            since = (datetime.utcnow() - timedelta(hours=24)).isoformat()
+        elif isinstance(since, datetime):
+            since = since.isoformat()
+            
+        # Convert since to datetime
+        since_dt = datetime.fromisoformat(since)
+        
+        active_users = []
+        for user_id, last_updated in self.recommender.user_metadata.items():
+            try:
+                user_dt = datetime.fromisoformat(last_updated)
+                if user_dt > since_dt:
+                    active_users.append(user_id)
+            except (ValueError, TypeError):
+                # Skip users with invalid timestamps
+                continue
+        
+        return active_users
+    
     def get_memory_profile(self):
         """Get memory profiling summary"""
         return self.memory_profiler.get_summary()
     
     def profile_components(self):
-        """Profile memory usage of major components"""
-        results = []
+        """Profile memory usage of individual components"""
+        import sys
         
-        # Profile vectorizer
-        results.append(self.memory_profiler.profile_object(self.vectorizer.tf, "TF-IDF Vectorizer"))
-        results.append(self.memory_profiler.profile_object(self.vectorizer.weight_vector, "Weight Vector"))
+        print("\nComponent Memory Usage:")
         
-        # Profile recommendation engine
-        results.append(self.memory_profiler.profile_object(self.recommender.weighted_matrix, "Weighted Matrix"))
-        results.append(self.memory_profiler.profile_object(self.recommender.similarity_matrix, "Similarity Matrix"))
-        results.append(self.memory_profiler.profile_object(self.recommender.train_df, "Training DataFrame"))
+        # Recommender
+        if hasattr(self.recommender, 'train_df'):
+            train_df_size = sys.getsizeof(self.recommender.train_df)
+            print(f"Training DataFrame: {train_df_size / 1024 / 1024:.2f} MB")
         
-        return results
+        if hasattr(self.recommender, 'weighted_matrix'):
+            weighted_matrix_size = self.recommender.weighted_matrix.data.nbytes
+            print(f"Weighted Matrix: {weighted_matrix_size / 1024 / 1024:.2f} MB")
+            
+        if hasattr(self.recommender, 'similarity_matrix') and self.recommender.similarity_matrix is not None:
+            similarity_matrix_size = self.recommender.similarity_matrix.data.nbytes
+            print(f"Similarity Matrix: {similarity_matrix_size / 1024 / 1024:.2f} MB")
+        
+        # Vectorizer
+        if hasattr(self.vectorizer, 'tf') and self.vectorizer.tf is not None:
+            vectorizer_size = sys.getsizeof(self.vectorizer.tf)
+            print(f"TF-IDF Vectorizer: {vectorizer_size / 1024 / 1024:.2f} MB")
