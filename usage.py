@@ -54,14 +54,12 @@ def main():
     
     # Add a completely new user
     new_user_complete = {
-            'User ID': 999,
             'Age': 35,
             'Gender': 'Male',
             'Marital status': 'Married',
             'Children': 'Yes',
             'Travel Tags': 'Cultural, Historical Sites',
             'Preferred Places': 'Luxor',
-            'combined_features': 'Luxor Cultural Historical Sites 35 Married Yes Male Historical Sites'
         }
     recommender.add_new_user_trip(user_data=new_user_complete)
     

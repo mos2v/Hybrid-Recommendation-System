@@ -123,7 +123,8 @@ class RecommendationEngine:
             # Extract visited places from the preference string
             try:
                 visited_places = set(user_vector.split(', ')[:1])
-            except:
+            except (AttributeError, TypeError) as e:
+                print(f"Warning: Could not extract visited places from vector: {e}")
                 visited_places = set()
         
         # Get place recommendations
@@ -170,16 +171,25 @@ class RecommendationEngine:
         else:
             # Just compute similarities for the new user
             if self.similarity_matrix is not None:
+                # Calculate similarities between new user and all users (including the new one)
                 new_similarities = cosine_similarity(new_user_vector, self.weighted_matrix)[0]
                 n = self.similarity_matrix.shape[0]
                 
-                # Expand similarity matrix
-                new_row = sp.csr_matrix(new_similarities)
-                new_col = sp.csr_matrix(new_similarities.reshape(-1, 1))
+                # Create new expanded similarity matrix with correct dimensions
+                expanded_matrix = sp.lil_matrix((n+1, n+1))
                 
-                # Add new row and column
-                self.similarity_matrix = sp.vstack([self.similarity_matrix, new_row])
-                self.similarity_matrix = sp.hstack([self.similarity_matrix, new_col])
+                # Copy existing similarities
+                expanded_matrix[:n, :n] = self.similarity_matrix
+                
+                # Add new user similarities (exclude last element which is similarity to self)
+                expanded_matrix[n, :n] = sp.csr_matrix(new_similarities[:n])
+                expanded_matrix[:n, n] = sp.csr_matrix(new_similarities[:n]).T
+                
+                # Self-similarity is 1.0
+                expanded_matrix[n, n] = 1.0
+                
+                # Convert back to CSR format for efficiency
+                self.similarity_matrix = expanded_matrix.tocsr()
         
         return len(self.train_df) - 1  # Return new user index
     

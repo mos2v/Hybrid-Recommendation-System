@@ -1,23 +1,32 @@
 import pandas as pd
 import numpy as np
 import scipy.sparse as sp
+import os
 from sklearn.model_selection import train_test_split
 
 class DataProcessor:
     """
     Handles data loading, preprocessing, and feature engineering for the recommendation system.
     """
-    def __init__(self, category_columns=None):
+    def __init__(self, category_columns=None, data_dir="data"):
         """Initialize the data processor with category columns"""
         self.category_columns = category_columns or [
             "Historical Sites", "Beaches", "Adventure", "Nile Cruises",
             "Religious Tourism", "Desert Exploration", "Relaxation"
         ]
+        self.data_dir = data_dir
+        # Initialize separate dataframes for raw and processed user data
+        self.raw_users_df = None
+        self.users_df = None
+        self.places_df = None
     
     def load_data(self, users_path, places_path):
         """Load user and place datasets"""
         try:
-            self.users_df = pd.read_excel(users_path)
+            # Load raw user data
+            self.raw_users_df = pd.read_excel(users_path)
+            # Make a copy for processed data
+            self.users_df = self.raw_users_df.copy()
             self.places_df = pd.read_excel(places_path)
             print(f"Data loaded: {len(self.users_df)} users, {len(self.places_df)} places")
             return True
@@ -43,6 +52,11 @@ class DataProcessor:
     
     def preprocess_users(self):
         """Process user data and merge with place categories"""
+        # Keep a record of the original user order
+        original_user_order = None
+        if 'User ID' in self.users_df.columns:
+            original_user_order = self.users_df['User ID'].tolist()
+            
         # Ensure users_df has all required columns
         for col in ['User ID', 'Age', 'Gender', 'Marital status', 'Children', 'Travel Tags', 'Preferred Places']:
             if col not in self.users_df.columns:
@@ -58,9 +72,6 @@ class DataProcessor:
                     self.places_df['combined_info'] = ''
                 else:
                     self.places_df[col] = 0
-        
-        # Reset the users DataFrame with the necessary columns for category information
-        temp_df = pd.DataFrame()
         
         # Process each user individually to handle multiple preferred places
         user_rows = []
@@ -132,6 +143,22 @@ class DataProcessor:
         # Aggregate user preferences
         self.users_df = self._aggregate_user_preferences(temp_df)
         
+        # Maintain original user order if possible
+        if original_user_order:
+            # Create a mapping of user IDs to their original position
+            user_order_map = {user_id: idx for idx, user_id in enumerate(original_user_order)}
+            
+            # Add any new users at the end
+            new_user_ids = set(self.users_df['User ID']) - set(original_user_order)
+            max_idx = len(original_user_order)
+            for new_id in new_user_ids:
+                user_order_map[new_id] = max_idx
+                max_idx += 1
+                
+            # Sort by the original order
+            self.users_df['_sort_order'] = self.users_df['User ID'].map(user_order_map)
+            self.users_df = self.users_df.sort_values('_sort_order').drop('_sort_order', axis=1).reset_index(drop=True)
+        
         return self.users_df
     
     def _aggregate_user_preferences(self, df=None):
@@ -198,7 +225,7 @@ class DataProcessor:
         self.places_df.loc[idx, 'combined_info'] = ' '.join(combined_info)
         
         # Save updated places data
-        self.places_df.to_excel("Places.xlsx", index=False)
+        self.places_df.to_excel(os.path.join(self.data_dir, "Places.xlsx"), index=False)
         print(f"Added new place: {place_data['Place name']}")
         return True
     
@@ -212,39 +239,45 @@ class DataProcessor:
             print(f"Place '{place_name}' not found")
             return False
         
-        # Get current preferred places
+        # If raw_users_df doesn't exist yet, create it from current data
+        if self.raw_users_df is None:
+            raw_columns = ['User ID', 'Age', 'Gender', 'Marital status', 'Children', 'Travel Tags', 'Preferred Places']
+            self.raw_users_df = self.users_df[raw_columns].copy()
+        
+        # Get current preferred places for raw and processed data
+        raw_user_idx = self.raw_users_df[self.raw_users_df['User ID'] == user_id].index[0]
         user_idx = self.users_df[self.users_df['User ID'] == user_id].index[0]
-        current_places = self.users_df.loc[user_idx, 'Preferred Places']
+        
+        raw_current_places = self.raw_users_df.loc[raw_user_idx, 'Preferred Places']
+        processed_current_places = self.users_df.loc[user_idx, 'Preferred Places']
         
         # Check if place is already in preferred places
-        if isinstance(current_places, str) and place_name in current_places.split(', '):
+        if isinstance(processed_current_places, str) and place_name in processed_current_places.split(', '):
             print(f"User already has {place_name} in their preferred places")
             return False
         
-        # Update preferred places
-        updated_places = f"{current_places}, {place_name}" if current_places else place_name
+        # Update preferred places in raw data
+        raw_updated_places = f"{raw_current_places}, {place_name}" if raw_current_places else place_name
+        self.raw_users_df.loc[raw_user_idx, 'Preferred Places'] = raw_updated_places
         
-        # Store the user's current information
-        user_data = self.users_df.loc[user_idx].copy()
-        user_data['Preferred Places'] = updated_places
+        # Update preferred places in processed data
+        processed_updated_places = f"{processed_current_places}, {place_name}" if processed_current_places else place_name
+        self.users_df.loc[user_idx, 'Preferred Places'] = processed_updated_places
         
-        # Remove the user from the DataFrame
-        self.users_df = self.users_df[self.users_df['User ID'] != user_id]
-        
-        # Create a temporary DataFrame with the updated user
-        temp_df = pd.DataFrame([user_data])
-        
-        # Reload the entire dataset to ensure proper merging with places
-        # This is a more reliable approach than trying to patch the existing DataFrame
-        self.users_df = pd.concat([self.users_df, temp_df], ignore_index=True)
-        
-        # Save updated users data
-        self.users_df.to_excel("Users.xlsx", index=False)
+        # Save RAW user data first - this contains ONLY basic user info
+        self.raw_users_df.to_excel(os.path.join(self.data_dir, "Users.xlsx"), index=False)
         print(f"Added trip to {place_name} for User ID {user_id}")
-            
-        # Now reprocess everything to ensure consistency
+        
+        # Now reprocess everything to ensure consistency in the processed data
         self.preprocess_places()  # Ensure all places are properly processed
-        self.preprocess_users()   # This will now correctly incorporate the new trip
+        self.preprocess_users()   # This will correctly incorporate the new trip
         self.create_feature_text()
         
         return True
+    
+    def save_processed_data(self):
+        """Save processed data files"""
+        if self.users_df is not None:
+            self.users_df.to_excel(os.path.join(self.data_dir, "Users_processed.xlsx"), index=False)
+        if self.places_df is not None:
+            self.places_df.to_excel(os.path.join(self.data_dir, "Places_processed.xlsx"), index=False)

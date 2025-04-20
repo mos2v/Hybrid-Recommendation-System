@@ -26,7 +26,7 @@ class TravelRecommender:
         os.makedirs(model_dir, exist_ok=True)
         
         # Initialize components
-        self.data_processor = DataProcessor()
+        self.data_processor = DataProcessor(data_dir=data_dir)  # Pass data_dir here
         self.vectorizer = FeatureVectorizer()
         self.recommender = RecommendationEngine(batch_size=50)
         self.evaluator = ModelEvaluator()
@@ -177,6 +177,7 @@ class TravelRecommender:
                     # Recompute similarities for this user
                     if self.recommender.similarity_matrix is not None:
                         from sklearn.metrics.pairwise import cosine_similarity
+                        import scipy.sparse as sp
                         new_similarities = cosine_similarity(user_vector, self.recommender.weighted_matrix)[0]
                         self.recommender.similarity_matrix[user_idx] = sp.csr_matrix(new_similarities)
                         # Update column (similarities of other users to this user)
@@ -198,7 +199,20 @@ class TravelRecommender:
                     max_id = self.data_processor.users_df['User ID'].max()
                     user_data['User ID'] = max_id + 1
                 
-                # Add to the users dataframe
+                # Also update the raw_users_df
+                if self.data_processor.raw_users_df is None:
+                    raw_columns = ['User ID', 'Age', 'Gender', 'Marital status', 'Children', 'Travel Tags', 'Preferred Places']
+                    self.data_processor.raw_users_df = self.data_processor.users_df[raw_columns].copy()
+                    
+                # Add raw user data
+                raw_user_data = {col: user_data.get(col, '') for col in 
+                            ['User ID', 'Age', 'Gender', 'Marital status', 'Children', 'Travel Tags', 'Preferred Places']}
+                self.data_processor.raw_users_df = pd.concat([self.data_processor.raw_users_df, pd.DataFrame([raw_user_data])], ignore_index=True)
+                
+                # Save raw user data
+                self.data_processor.raw_users_df.to_excel(os.path.join(self.data_dir, "Users.xlsx"), index=False)
+                
+                # Add to the processed users dataframe
                 self.data_processor.users_df = pd.concat([self.data_processor.users_df, pd.DataFrame([user_data])], ignore_index=True)
                 
                 # Process new user
@@ -210,8 +224,7 @@ class TravelRecommender:
                     new_user_idx = self.recommender.update_with_new_user(self.vectorizer, user_data)
                     print(f"Added new user with ID {user_data['User ID']}, index {new_user_idx}")
                     
-                    # Save updated users data and model
-                    self.data_processor.users_df.to_excel(os.path.join(self.data_dir, "Users.xlsx"), index=False)
+                    # Save model
                     self.save_model()
                     
                 return True
@@ -226,8 +239,7 @@ class TravelRecommender:
         os.makedirs(self.model_dir, exist_ok=True)
         
         # Save processed data
-        pd.to_excel = self.data_processor.users_df.to_excel(os.path.join(self.data_dir, "Users_processed.xlsx"), index=False)
-        pd.to_excel = self.data_processor.places_df.to_excel(os.path.join(self.data_dir, "Places_processed.xlsx"), index=False)
+        self.data_processor.save_processed_data()
         
         # Save vectorizer
         self.vectorizer.save(self.model_dir)
@@ -236,7 +248,8 @@ class TravelRecommender:
         self.recommender.save(self.model_dir)
         
         print(f"Model saved to {self.model_dir}")
-    
+        
+        
     def load_model(self):
         """Load model artifacts"""
         try:
