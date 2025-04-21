@@ -22,7 +22,7 @@ class TravelRecommender:
         """Initialize travel recommender with directories for data and models"""
         self.data_dir = data_dir
         self.model_dir = model_dir
-        self.data_processor = DataProcessor(data_dir)
+        self.data_processor = DataProcessor(data_dir=data_dir)
         self.vectorizer = FeatureVectorizer()
         self.recommender = RecommendationEngine()
         self.evaluator = ModelEvaluator()

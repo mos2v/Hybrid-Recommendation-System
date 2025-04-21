@@ -3,4 +3,4 @@
 *.npy
 *.npz
 *.log
-models\metadata.json
+models/metadata.json

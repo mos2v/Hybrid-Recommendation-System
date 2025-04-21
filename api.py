@@ -96,28 +96,37 @@ class TripPlan(BaseModel):
 # Define lifespan context manager for startup/shutdown events
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: Load or train the model
-    try:
-        logger.info("Loading recommendation model...")
-        if recommender.load_model():  # This should return True only on successful load
-            logger.info("Model loaded successfully")
+    
+    global recommender
+    
+    logger.info("Loading recommendation model...")
+    if recommender.load_model():  # This should return True only on successful load
+        logger.info("Model loaded successfully")
+    else:
+        logger.warning("Model loading returned False, will attempt to train a new model")
+        if recommender.train():
+            logger.info("New model trained successfully")
         else:
-            logger.warning("Model loading returned False, will attempt to train a new model")
-            if recommender.train():
-                logger.info("New model trained successfully")
-            else:
-                logger.error("Failed to train new model")
-    except Exception as e:
-        logger.error(f"Error during startup: {str(e)}")
-        # Try to train a new model if loading fails
-        try:
-            logger.info("Training new model after load failure...")
-            if recommender.train():
-                logger.info("New model trained successfully")
-            else:
-                logger.error("Failed to train new model")
-        except Exception as train_e:
-            logger.error(f"Failed to train model: {str(train_e)}")
+            logger.error("Failed to train new model")
+    # except Exception as e:
+    #     print('f')
+    #     logger.error(f"Error during startup: {str(e)}")
+    #     # Try to train a new model if loading fails
+    #     try:
+    #         logger.info("Training new model after load failure...")
+    #         if recommender.train():
+    #             logger.info("New model trained successfully")
+    #         else:
+    #             logger.error("Failed to train new model")
+    #     except Exception as train_e:
+    #         logger.error(f"Failed to train model: {str(train_e)}")
+    
+    
+    # Set up background tasks
+    background_tasks = BackgroundTasks()
+    background_tasks.add_task(update_active_users_periodically)
+    logger.info("Background tasks scheduled")
+    
     
     yield  # Server is running and processing requests here
     
@@ -141,15 +150,7 @@ app.add_middleware(
     allow_headers=["*"],  # Allows all headers
 )
 
-# Background task for periodic updates
-@app.on_event("startup")
-async def setup_periodic_tasks():
-    """Set up periodic tasks that run in the background"""
-    background_tasks = BackgroundTasks()
-    
-    # Schedule the first batch update
-    background_tasks.add_task(update_active_users_periodically)
-    
+
 async def update_active_users_periodically():
     """
     Periodically update users with recent activity
