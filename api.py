@@ -96,7 +96,7 @@ class TripPlan(BaseModel):
 # Define lifespan context manager for startup/shutdown events
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-        
+
     logger.info("Loading recommendation model...")
     if recommender.load_model():  # This should return True only on successful load
         logger.info("Model loaded successfully")
@@ -669,9 +669,3 @@ async def root():
         "health": "/health"
     }
 
-if __name__ == "__main__":
-    # Get port from environment variable or use custom default (5050)
-    port = int(os.environ.get('PORT', 5050))
-    
-    # Start the FastAPI app with uvicorn
-    uvicorn.run("api:app", host="0.0.0.0", port=port, reload=True)
